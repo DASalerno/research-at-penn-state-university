@@ -1,0 +1,274 @@
+---
+title: "Pirate_OS_ET_Analysis"
+output:
+  pdf_document: default
+  html_document:
+    fig_height: 8
+    fig_width: 12
+editor_options:
+  chunk_output_type: console
+---
+# Load Packages and Data
+```{r Load packages, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(vroom)
+library(remotes)
+library(plotrix)
+library(ggpattern)
+
+```
+
+```{r Load participant responses, message=FALSE, warning=FALSE, results='hide'}
+# Participant responses are stored in separate text files
+# Load data from these files into one data frame
+list_of_files <- list.files(path = "./data", recursive = FALSE,
+                            pattern = "\\.txt$", 
+                            full.names = TRUE)
+dataP_raw <- vroom(list_of_files, id = "Code")
+dataP_raw<-dataP_raw%>%
+  separate(Code,c("path","path2","Code"), sep="/")
+
+# Select only columns necessary for analysis
+dataP<-dataP_raw%>%
+  select("Code",
+         "Begin Time - msec",
+         "End Time - msec",
+         "Duration - msec",
+          "Fixations",
+         "IP",
+         "Trial",
+        "Behavioral")
+dataP$Code<-str_replace_all(dataP$Code, ".txt", "")
+
+```
+
+```{r Load trial and list data}
+# Trial data identifies the four locations of interest for each trial
+TrialdataP<-read_tsv("./data/Suppdata/Trial_info_corrected.txt", col_names =TRUE)
+head(TrialdataP)
+
+# List data identifies the trial version each participant took part in
+List<-read_csv("./data/Suppdata/List.csv", col_names =TRUE)
+head(List)
+
+```
+
+# Data Processing
+```{r Fix behavioral data}
+# Filter out NA's in the 'IP' and 'Fixations' columns
+dataP<-dataP%>%
+  filter(!is.na(IP))%>%
+  filter(!is.na(Fixations))
+
+# Get unique values for behavioral data for each trial and participant
+Behave<-dataP%>%
+  select(Code, Trial, Behavioral)%>%
+  filter(!is.na(Behavioral))%>%
+  unique()%>%
+  mutate(Behavioral = factor(Behavioral))
+
+# Left join behavioral data to main data frame
+dataP<-dataP%>%
+  select("Code",
+         "Begin Time - msec",
+         "End Time - msec",
+         "Duration - msec",
+          "Fixations",
+         "IP",
+         "Trial")%>%
+  left_join(Behave)%>%
+  mutate(Behavioral = factor(Behavioral),
+           IP = factor(IP),
+           Trial = factor(Trial),
+           Code = factor(Code))%>%
+  rename(IP_start = `Begin Time - msec`,
+         IP_end = `End Time - msec` ,
+         Duration = `Duration - msec` 
+         )%>%
+  separate(Trial, c("Item","Experiment", "Condition"), remove=FALSE)%>%
+  # Filter for 'Pirate' experiment, as the dataP currently includes data for
+  # a related experiment that was conducted simultaneously
+  filter(Experiment == "Pirate")
+
+```
+
+```{r Join trial info and list info}
+dataP<-dataP%>%
+  left_join(List)%>%
+  unite(ListCode, c("Trial", "List"), sep="_",remove = FALSE)%>%
+  # Here we use the trial code and list info to join in the trial info,
+  # which let us know what participants were looking at in each trial - this is
+  # known as the 'Fixation Object'
+  left_join(TrialdataP, by = c("ListCode" = "ListCode"))%>%
+  select( "Code",
+          "Duration",
+          "Fixations",
+          "TargLoc",
+          "CompLoc",
+          "Dist1Loc",
+          "Dist2Loc",
+          "IP",
+          "Trial",
+          "Item",
+          "Behavioral",
+           "ListCode")
+
+```
+
+```{r Code fixation object}
+dataP$FixationObject<-ifelse(dataP$Fixations==dataP$TargLoc,"Target",
+                             ifelse(dataP$Fixations==dataP$CompLoc,"Competitor",                                                
+                                    ifelse(dataP$Fixations==dataP$Dist1Loc,"Dist1","Dist2")
+                                    )
+                            )
+# Remove unnecessary columns
+dataP<-dataP%>%
+  select( "Code",
+          "Duration",
+          "Fixations",
+          "TargLoc",
+          "CompLoc",
+          "Dist1Loc",
+          "Dist2Loc",
+          "IP",
+          "Trial",
+          "Item",
+          "Behavioral",
+          "FixationObject")
+                            
+```
+
+```{r Create columns for fixation proportions}
+# For each time interval, the location the participant is looking at is coded
+# as '1' and the others are coded as '0'
+dataP$TargetCount<-ifelse(dataP$FixationObject=="Target",dataP$Duration,0)
+dataP$CompetitorCount<-ifelse(dataP$FixationObject=="Competitor",dataP$Duration,0)
+dataP$Dist1Count<-ifelse(dataP$FixationObject=="Dist1",dataP$Duration,0)
+dataP$Dist2Count<-ifelse(dataP$FixationObject=="Dist2",dataP$Duration,0)
+
+# Remove unnecessary columns
+dataP<-dataP%>%
+  select( "Code",
+          "Duration",
+          "Fixations",
+          "TargLoc",
+          "CompLoc",
+          "Dist1Loc",
+          "Dist2Loc",
+          "IP",
+          "Trial",
+          "Item",
+          "Behavioral",
+          "FixationObject",
+          "TargetCount",
+          "CompetitorCount",
+          "Dist1Count",
+          "Dist2Count"
+        )
+
+```
+
+```{r Calculate fixation proportions}
+# Sum fixation totals grouped by trial
+(dataP_prop<-dataP%>%
+  group_by(Code,Trial,IP)%>%
+   summarize(TargetSum=sum(TargetCount),
+             CompetitorSum=sum(CompetitorCount),
+             Dist1Sum=sum(Dist1Count),
+             Dist2Sum =sum(Dist2Count),
+             IPtotal = sum(TargetSum,CompetitorSum,Dist1Sum,Dist2Sum)
+            )
+ )
+
+# Calculate fixation proportions
+dataP_prop<-dataP_prop%>%
+  mutate("Target (chest)" = TargetSum/IPtotal,
+          "Verb Related (bone)" = CompetitorSum/IPtotal,
+          "Agent Related (ship)" = Dist1Sum/IPtotal,
+          "Unrelated (cat)" = Dist2Sum/IPtotal
+          )%>%
+  select(Code,
+        Trial,
+        IP,
+        "Target (chest)",
+        "Verb Related (bone)",
+        "Agent Related (ship)",
+        "Unrelated (cat)",
+        IPtotal
+        )%>%
+  gather("Target (chest)",
+        "Verb Related (bone)",
+        "Agent Related (ship)",
+        "Unrelated (cat)",
+        key = "Fixation Object",
+        value = "Fixation_Proportion")
+
+```
+
+# Data Visualization
+```{r Prepare data for analysis}
+# Ensure factor variables are properly encoded as such
+dataP_prop2<-dataP_prop%>%
+  ungroup()%>%
+  separate(Trial, c("Item","Experiment","Condition"), remove = FALSE)%>%
+  mutate(`Fixation Object` = factor(`Fixation Object`, levels = c("Target (chest)","Verb Related (bone)","Agent Related (ship)","Unrelated (cat)")),
+          Item = factor(Item) )%>%
+  # Re-code interest periods for clarity
+  mutate(IP=recode(IP, 
+                    "np1"="Noun 1",
+                    "verb"="Verb",
+                    "np2"="Noun 2"),
+         IP=factor(IP, levels=c("Noun 1", "Verb", "Noun 2")))
+
+# Calculate mean and standard error of fixation proportions for each interest
+# period, fixation object, condition, and experiment
+(dataP_prop_summary<-dataP_prop2%>%
+ group_by(IP,`Fixation Object`,Condition,Experiment)%>%
+   summarize(`Fixation Proportion Mean` = mean(Fixation_Proportion,na.rm=TRUE),
+               Fixation_ProportionSE = std.error(Fixation_Proportion,na.rm=TRUE)
+            )
+)
+
+droplevels(dataP_prop_summary)
+
+```
+
+```{r Main plot}
+# The palette with gray:
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# The palette with black:
+cbbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# Plot mean fixation proportion by item across the three interest periods
+Pirate_ByIP_Base<-ggplot(data=dataP_prop_summary,
+                         aes(`Fixation Object`, `Fixation Proportion Mean`)
+                         )+
+  facet_wrap(~IP)+
+  geom_col(aes(fill=`Fixation Object`)
+           )+
+  theme(legend.title = element_blank(),
+        legend.key.size = unit(1, 'cm'),
+        text = element_text(family="serif",size=25),
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()
+        )+
+  scale_fill_manual(values=cbbPalette)+
+  geom_errorbar(aes(ymin = `Fixation Proportion Mean`-Fixation_ProportionSE,
+                    ymax=`Fixation Proportion Mean`+Fixation_ProportionSE,
+                    group = Condition), 
+                width=.2,position=position_dodge(0.9)
+                )+
+  coord_cartesian(ylim = c(0.0, 1))
+
+```
+
+## Analysis of Main Plot
+
+Fixation proportions are random during the Noun 1 interest period, as
+participants have not yet received the verbal cue to predict the target noun.
+The elevated proportion of fixations to the target noun compared to all others 
+uggests that participants were able to predict the target noun. Participants
+hear the target noun during the Noun 2 interest period; thus, the vast majority
+of fixations are directed towards the target.

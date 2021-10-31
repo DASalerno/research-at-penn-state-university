@@ -1,0 +1,327 @@
+---
+title: "AnA_OS_ET_Analysis"
+output:
+  html_document: 
+    fig_width: 12
+    fig_height: 8
+editor_options:
+  chunk_output_type: console
+---
+# Load Packages and Data
+```{r Load packages, message=FALSE, warning=FALSE}
+options(width = 100)
+library(tidyverse)
+library(vroom)
+library(remotes)
+library(ggpattern)
+library(plotrix)
+
+```
+
+```{r Load participant responses, message=FALSE, warning=FALSE, results='hide'}
+# Participant responses are stored in separate text files
+# Load data from these files into one data frame
+list_of_files <- list.files(path = "./data", recursive = FALSE,
+                            pattern = "\\.txt$", 
+                            full.names = TRUE)
+data_raw <- vroom(list_of_files,id = "Code")
+data_raw<-data_raw%>%
+  separate(Code,c("path","path2","Code"), sep="/")
+
+# Select only columns necessary for analysis
+data<-data_raw%>%
+  select("Code",
+         "Begin Time - msec",
+         "End Time - msec",
+         "Duration - msec",
+          "Fixations",
+         "IP",
+         "Trial",
+        "Behavioral")
+
+data$Code<-str_replace_all(data$Code, ".txt", "")
+
+```
+
+```{r Load trial, LHQ, and list data}
+# Trial data identifies the four locations of interest for each trial
+TrialData<-read_tsv("./data/SuppData/Trial_info.txt", col_names =TRUE)
+head(TrialData)
+
+# Language history questionnaire info for participants
+LHQ<-read_tsv("./data/SuppData/LHQ.txt",col_names =TRUE)
+head(LHQ)
+
+# List data identifies the trial version each participant took part in
+List<-read_tsv("./data/SuppData/List.txt",col_names =TRUE)
+head(List)
+
+```
+
+# Data Processing
+```{r Fix behavioral data}
+# Filter out NA's in the 'IP' and 'Fixations' columns
+data<-data%>%
+  filter(!is.na(IP))%>%
+  filter(!is.na(Fixations))
+
+# Get unique values for behavioral data for each trial and participant
+Behave<-data%>%
+  select(Code, Trial, Behavioral)%>%
+  filter(!is.na(Behavioral))%>%
+  unique()%>%
+  mutate(Behavioral = factor(Behavioral))%>%
+  mutate(Behavioral=fct_collapse(Behavioral,
+    NR = c("nr","?"))
+    )
+
+# Left join behavioral data to main data frame
+data<-data%>%
+  select("Code",
+         "Begin Time - msec",
+         "End Time - msec",
+         "Duration - msec",
+          "Fixations",
+         "IP",
+         "Trial")%>%
+  left_join(Behave)%>%
+  mutate(Behavioral = factor(Behavioral),
+           IP = factor(IP),
+           Trial = factor(Trial),
+           Code = factor(Code))%>%
+  rename( IP_start = `Begin Time - msec`,
+         IP_end = `End Time - msec` ,
+         Duration = `Duration - msec` 
+         )%>%
+  separate(Trial, c("Item","Ambiguity", "Referent"), remove=FALSE)
+  data
+  
+```
+
+```{r Join trial info and list info}
+data<-data%>%
+  left_join(List)%>%
+  unite(ListCode, c("List", "Trial"), sep="_",remove = FALSE)%>%
+  # Here we use the trial code and list info to join in the trial info,
+  # which let us know what participants were looking at in each trial—
+  # this is known as the ‘Fixation Object’
+  left_join(TrialData, by = c("ListCode" = "ListCode"))%>%
+  select( "Code",
+          "List",
+          "Duration",
+          "Fixations",
+          "TargLoc",
+          "CompLoc",
+          "IncGoalloc",
+          "Goalloc",
+          "IP",
+          "Trial",
+          "Item",
+          "Ambiguity",
+          "Referent",
+          "Behavioral",
+          "AnimacyTarget",
+          "Motion1",
+           "IP_start",
+          "IP_end" ,
+           "ListCode")
+
+```
+
+```{r Code fixation object}
+data$FixationObject<-ifelse(data$Fixations==data$TargLoc,"Target",
+                            ifelse(data$Fixations==data$CompLoc,"Competitor",
+                                   ifelse(data$Fixations==data$IncGoalloc,"IncGoal","Goal")
+                                   )
+                            )
+# Remove unnecessary columns
+data<-data%>%
+  select( "Code",
+          "List",
+          "Duration",
+          "FixationObject",
+          "IP",
+          "Trial",
+          "Item",
+          "Ambiguity",
+          "Referent",
+          "Behavioral",
+          "AnimacyTarget",
+          "Motion1",
+           "IP_start",
+          "IP_end" ,
+           "ListCode",
+           "TargLoc",
+          "CompLoc",
+          "IncGoalloc",
+          "Goalloc", 
+          "Fixations"
+          )
+                            
+```
+
+```{r Create columns for fixation proportions}
+# For each time interval, the location the participant is looking at is coded
+# as '1' and the others are coded as '0'
+data$TargetCount<-ifelse(data$FixationObject=="Target",data$Duration,0)
+data$CompetitorCount<-ifelse(data$FixationObject=="Competitor",data$Duration,0)
+data$IncGoalCount<-ifelse(data$FixationObject=="Inc Goal",data$Duration,0)
+data$GoalCount<-ifelse(data$FixationObject=="Goal",data$Duration,0)
+
+# Remove unnecessary columns
+data<-data%>%
+  select( "Code",
+          "List",
+          "Duration",
+          "FixationObject",
+          "IP",
+          "Trial",
+          "TargetCount",
+          "CompetitorCount",
+          "IncGoalCount",
+          "GoalCount",
+          "Item",
+          "Ambiguity",
+          "Referent",
+          "Behavioral",
+          "AnimacyTarget",
+          "Motion1",
+           "IP_start",
+          "IP_end" ,
+           "ListCode",
+           "TargLoc",
+          "CompLoc",
+          "IncGoalloc",
+          "Goalloc", 
+          "Fixations"
+          )
+
+```
+
+```{r Calculate fixation proportions}
+# Sum fixation totals grouped by trial
+data_prop<-data%>%
+  group_by(Code,Trial,IP)%>%
+  summarize(TargetSum=sum(TargetCount),
+            CompetitorSum=sum(CompetitorCount),
+            IncGoalSum=sum(IncGoalCount),
+            GoalSum =sum(GoalCount),
+            IPtotal = sum(TargetSum,CompetitorSum,IncGoalSum,GoalSum)
+            )
+
+# Calculate fixation proportions and join LHQ data
+data_prop<-data_prop%>%
+  mutate(Target = TargetSum/IPtotal,
+         Competitor = CompetitorSum/IPtotal,
+         IncGoal = IncGoalSum/IPtotal,
+         Goal = GoalSum/IPtotal
+         )%>%
+  select(Code,
+         Trial,
+         IP,
+         Target,
+         Competitor,
+         IncGoal,
+         Goal,
+         IPtotal
+        )%>%
+  gather(`Target`,
+         `Competitor`,
+         `IncGoal`,
+         `Goal`,
+         key = "Fixation_Object",
+         value = "Fixation_Proportion")%>%
+  left_join(LHQ)
+
+```
+
+# Data Visualization
+```{r Prepare data for analysis}
+# Ensure factor variables are properly encoded as such
+Clevels<-c("Am_1","Un_1","Am_2","Un_2")
+data_prop<-data_prop%>%
+  ungroup()%>%
+  separate(Trial, c("Item","Ambiguity","Referent"), remove = FALSE)%>%
+  unite(Condition, c("Ambiguity", "Referent"), remove = FALSE)%>%
+  mutate(Condition = factor(Condition, levels = Clevels),
+         Ambiguity = factor(Ambiguity),
+         Referent = factor(Referent),
+         Fixation_Object = factor(Fixation_Object),
+         Item = factor(Item)
+         )%>%
+  filter(!is.na(Referent))
+
+# Calculate mean and standard error of fixation proportions for each condition
+# variable
+data_prop_summary<-data_prop%>%
+  group_by(IP,Referent,Ambiguity,Fixation_Object,Condition)%>%
+  summarize(Fixation_ProportionMean = mean(Fixation_Proportion,na.rm=TRUE),
+            Fixation_ProportionSE = std.error(Fixation_Proportion,na.rm=TRUE)
+            )%>%
+  droplevels()
+
+# Check data by condition to ensure roughly even distribution
+data%>%
+  group_by(Ambiguity,Referent)%>%
+  count()
+  
+```
+
+```{r Main plot}
+ggplot(data=data_prop_summary,aes(Fixation_Object, Fixation_ProportionMean))+
+  ggtitle("Proportion by Object for by IP")+
+  facet_wrap(~IP)+
+  geom_col_pattern(aes(pattern_fill = Referent,    pattern = Ambiguity), 
+                   pattern_density = 0.6,
+                   position="dodge",
+                   fill    = 'white',
+                   colour  = 'black'
+                   ) +
+  scale_pattern_fill_manual(values = c(`1`='black', `2`='red'))+
+  geom_errorbar(aes(ymin = Fixation_ProportionMean-Fixation_ProportionSE,
+                    ymax=Fixation_ProportionMean+Fixation_ProportionSE,group = Condition),
+                width=.2,position=position_dodge(0.9))
+
+```
+
+```{r Plot - NP2}
+ggplot(subset(data_prop_summary,IP=="np2"),aes(Fixation_Object,
+                                               Fixation_ProportionMean)
+       )+
+  ggtitle("Proportion by Object for np2")+
+  geom_col_pattern(aes(pattern_fill = Referent,    pattern = Ambiguity), 
+                   pattern_density = 0.6,
+                   position="dodge",
+                   fill    = 'white',
+                   colour  = 'black'
+                   ) +
+  scale_pattern_fill_manual(values = c(`1`='black', `2`='red'))+
+  geom_errorbar(aes(ymin = Fixation_ProportionMean-Fixation_ProportionSE,
+                    ymax=Fixation_ProportionMean+Fixation_ProportionSE,group = Condition),
+                width=.2,position=position_dodge(0.9))
+
+```
+
+```{r Plot - NP2S}
+ggplot(subset(data_prop_summary,IP=="np2s"),aes(Fixation_Object,
+                                                Fixation_ProportionMean)
+       )+
+  ggtitle("Proportion by Object for np2s")+
+  geom_col_pattern(aes(pattern_fill = Referent,    pattern = Ambiguity), 
+                   pattern_density = 0.6,
+                   position="dodge",
+                   fill    = 'white',
+                   colour  = 'black'
+                   ) +
+  geom_errorbar(aes(ymin = Fixation_ProportionMean-Fixation_ProportionSE,
+                    ymax=Fixation_ProportionMean+Fixation_ProportionSE,group = Condition),
+                width=.2,position=position_dodge(0.9))
+
+```
+
+## Analysis of Plots
+
+We had hypothesized that participants should have been able to predict the target
+noun when the indefinite article was unambiguous. We expected to see this effect
+when comparing the np2 and np2s interest periods, however this was not observed in
+plots above. 

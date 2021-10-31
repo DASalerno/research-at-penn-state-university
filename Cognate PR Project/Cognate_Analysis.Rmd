@@ -1,0 +1,371 @@
+---
+title: "CognateProject_Analysis"
+author: "Cognate Group"
+date: "3/10/2021"
+output:
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load Packages and Data
+```{r Load packages, include=FALSE}
+library(tidyverse)
+library(lmerTest)
+library(buildmer)
+library(lme4)
+library(LMERConvenienceFunctions)
+library(Rling)
+library(pracma)
+library(Hmisc)
+library(xtable)
+
+```
+
+```{r Load data, message=FALSE, include=FALSE}
+#Participant responses
+data_raw<-read_csv("./data/DataCognateAll_3_21.csv")
+head(data_raw)
+
+# Language history questionnaire info for participants
+LHQ<-read_csv("./data/LHQ.csv",col_names =TRUE)
+head(LHQ)
+
+# Verbal fluency info for participants
+VF<-read_csv("./data/VF_CognateExp_Master.csv", col_names =TRUE)
+head(VF)
+
+# Participant ages
+Age<-read_csv("./data/ParticipantGroups.csv", col_names =TRUE)
+
+# Set factor variables
+data<-data_raw%>%
+  mutate(item=factor(item),
+         Condition=factor(Condition),
+         code = factor(code),
+         Accuracy = factor(Accuracy))
+summary(data)
+
+```
+
+# Data Processing
+```{r Data pre-processing}
+# Re-code condition variable
+data$Condition<-recode(data$Condition, C = "Cognate")
+data$Condition<-recode(data$Condition, N = "Non Cognate")
+
+# Remove data that is unnecessary for analysis; does not need to be reported
+data_cleaned<-data%>%
+  filter(Accuracy !="#N/A",
+         Condition != "P")%>%
+  droplevels()%>%
+  select(code:response)
+
+summary(data_cleaned)
+
+# Check distribution of incorrect or missing responses by participant; this is
+# done to determine the viability of their responses
+data_itemCheck <- data%>%
+  filter(Accuracy %in% c(0, 2, "n"),
+         Condition1 != "P")%>%
+  mutate(logRT = log(RT))
+
+ggplot(data_itemCheck, 
+       aes(item, ..count..)
+       ) +
+  geom_bar() + 
+  facet_wrap(~Accuracy)
+
+```
+
+```{r Calculate data lost}
+# Only correct responses (1) will be used for analysis
+dataLost<-data_cleaned%>%
+  count(Accuracy) %>% 
+  mutate(percent = n / sum(n) * 100)
+
+dataLost
+#   Accuracy     n percent
+# * <fct>    <int>   <dbl>
+# 1 0          323   10.1 
+# 2 1         2226   69.4 
+# 3 2          172    5.36
+# 4 n          485   15.1 
+
+```
+
+```{r Filter data}
+# Filter data for correct responses only
+data_Exp<-data_cleaned%>%
+  filter(Accuracy == 1)%>%
+  droplevels()%>%
+  select(!Accuracy)
+
+summary(data_Exp)
+
+```
+
+```{r Log transform data}
+# Reaction times are log transformed to achieve a normalized (i.e. bell curve)
+# distribution
+data_Exp$logRT<-log(data_Exp$RT)
+
+```
+
+```{r Outlier removal}
+# Remove outliers based on MAD scores (Median Absolute Deviation) derived from 
+# log total duration, only by participant (see Levshina, 2015, ch.3)
+data_Exp_clean <- data.frame()
+
+participants <- unique(data_Exp$code)
+
+for(i in 1:length(participants)){
+  x <- subset(data_Exp, code == participants[i])
+  data_Exp_clean <- rbind(data_Exp_clean,
+                          subset(x, abs(normalize(logRT, method = "mad")) < 3))
+}
+rm(i, x, participants)
+
+
+paste0(round(((length(data_Exp$logRT) - length(data_Exp_clean$logRT)) / length(data_Exp$logRT))*100,2),"% of data points removed")
+# "2.07% of data points removed"
+
+```
+
+```{r Visually checking for normality of dependent variable}
+hist(data_Exp_clean$RT)
+hist(data_Exp_clean$logRT)
+qqnorm(data_Exp_clean$logRT, pch=1)
+qqline(data_Exp_clean$logRT, col= "red")
+
+```
+
+```{r Joining additional variables of interest}
+# Join participant age and verbal fluency data
+data_Exp_clean<-data_Exp_clean %>% 
+  left_join(Age) %>%
+  left_join(VF, by = c("code" = "Participant"))
+
+data_Exp_clean_VF<-data_Exp_clean %>%
+  drop_na(English)
+summary(data_Exp_clean_VF)
+
+```
+
+```{r Create age bins}
+# Four age bins created to address insufficient number of valid participant
+# responses after processing data
+data_Exp_clean$Age_Bin<-ifelse(data_Exp_clean$Age<9,"5-8 y/o",
+                               ifelse(between(data_Exp_clean$Age, 9, 12.6), "10-12 y/o",
+                               ifelse(between(data_Exp_clean$Age, 12.6, 15.6), "13-15 y/o", "16-18 y/o")))
+
+data_Exp_clean$Age_Bin <- factor(data_Exp_clean$Age_Bin, levels = c('5-8 y/o', '10-12 y/o', '13-15 y/o', '16-18 y/o'))
+
+table(data_Exp_clean$Age_Bin)
+
+```
+
+## Checking age bin data
+Number of participants in each age bin
+5-8 y/o    10-12 y/o    13-15 y/o     16-18 y/o
+16         25           20            17
+
+Number of responses in each age bin
+5-8 y/o    10-12 y/o    13-15 y/o     16-18 y/o
+293        705          620           562
+
+# Correlation Matrix
+```{r Define corstars function, include=FALSE}
+# While this function was used in our statistical analysis, I did not write it
+
+# 'x' is a matrix containing the data
+# Method : correlation method. "pearson"" or "spearman"" is supported
+# RemoveTriangle : remove upper or lower triangle
+# Results :  if "html" or "latex"
+# The results will be displayed in html or latex format
+corstars <-function(x, method=c("pearson", "spearman"), removeTriangle=c("upper", "lower"),
+                     result=c("none", "html", "latex")){
+    # Compute correlation matrix
+    require(Hmisc)
+    x <- as.matrix(x)
+    correlation_matrix<-rcorr(x, type=method[1])
+    R <- correlation_matrix$r # Matrix of correlation coeficients
+    p <- correlation_matrix$P # Matrix of p-value 
+    
+    # Define notions for significance levels; spacing is important.
+    mystars <- ifelse(p < .001, "*** ", ifelse(p < .01, "**  ", ifelse(p < .05, "*   ", "    ")))
+    
+    ## trunctuate the correlation matrix to two decimal
+    R <- format(round(cbind(rep(-1.11, ncol(x)), R), 2))[,-1]
+    
+    ## build a new matrix that includes the correlations with their appropriate stars
+    Rnew <- matrix(paste(R, mystars, sep=""), ncol=ncol(x))
+    diag(Rnew) <- paste(diag(R), " ", sep="")
+    rownames(Rnew) <- colnames(x)
+    colnames(Rnew) <- paste(colnames(x), "", sep="")
+    
+    # remove upper triangle of correlation matrix
+    if(removeTriangle[1]=="upper"){
+      Rnew <- as.matrix(Rnew)
+      Rnew[upper.tri(Rnew, diag = TRUE)] <- ""
+      Rnew <- as.data.frame(Rnew)
+    }
+    
+    # remove lower triangle of correlation matrix
+    else if(removeTriangle[1]=="lower"){
+      Rnew <- as.matrix(Rnew)
+      Rnew[lower.tri(Rnew, diag = TRUE)] <- ""
+      Rnew <- as.data.frame(Rnew)
+    }
+    
+    # remove last column and return the correlation matrix
+    Rnew <- cbind(Rnew[1:length(Rnew)-1])
+    if (result[1]=="none") return(Rnew)
+    else{
+      if(result[1]=="html") print(xtable(Rnew), type="html")
+      else print(xtable(Rnew), type="latex") 
+    }
+} 
+
+```
+
+```{r Full correlation matrix, results="hide"}
+#create df for correlation matrix
+myvars <- c("Age","English","Spanish")
+dataCor <- data_Exp_clean[myvars]
+dataCor <- sapply( dataCor, as.numeric )
+dataCor<-as.data.frame(dataCor)
+
+#prepare for correlation matrix with significance 
+mcor<-cor(dataCor,use = "complete.obs")
+upper.tri(mcor, diag = FALSE)
+upper<-round(mcor,digits=2)
+upper[upper.tri(mcor)]<-""
+upper<-as.data.frame(upper)
+upper
+
+print(xtable(upper), type="latex")
+
+corstars(dataCor[,1:3], result="latex")
+
+```
+
+# Additional Data Processing
+```{r Check mean log response times by age bin}
+age5to8 <- filter(data_Exp_clean, Age_Bin == '5-8 y/o')
+age10to12 <- filter(data_Exp_clean, Age_Bin == '10-12 y/o')
+age13to15 <- filter(data_Exp_clean, Age_Bin == '13-15 y/o')
+age16to18 <- filter(data_Exp_clean, Age_Bin == '16-18 y/o')
+
+ggplot(age16to18,
+       aes(x = Condition,
+           y = logRT)
+       ) +
+  geom_boxplot() +
+  facet_wrap(~code) + 
+  geom_hline(yintercept = mean(age16to18$logRT))
+
+```
+
+```{r Check number of responses by condition}
+cognate <- data_Exp_clean%>%
+  filter(Condition == "Cognate")%>%
+  group_by(code)%>%
+  mutate(cogCount = n())
+table(cognate$code)
+  
+nonCog <- data_Exp_clean%>%
+  filter(Condition == "Cognate")%>%
+  group_by(code)%>%
+  mutate(nonCount = n())
+table(nonCog$code)
+
+count_long <- data_Exp_clean%>%
+  group_by(Condition, code, Age)%>%
+  summarise(n=n())
+
+count_df <- data_Exp_clean%>%
+  group_by(Condition, code, Age)%>%
+  summarise(n=n())%>%
+  spread(key=Condition, value = n)
+
+```
+
+```{r Exclude unviable participants}
+# Exclude participants with fewer than six responses in either condition
+exclude_noData <- c("alerob83", "diesan76", "luiriv75", "fabrol62", "valmal55", "danfre71")
+data_Exp_exclude <- data_Exp_clean%>%
+  filter(!code %in% exclude_noData)
+
+```
+
+# Linear Mixed Effects Model
+```{r LME Model}
+data_Exp_exclude$Condition<-fct_relevel(data_Exp_exclude$Condition, "Cognate", after = 1)
+
+# Age variable is centered on median, as zero is not a meaningful value
+data_Exp_exclude <- data_Exp_exclude%>%
+  mutate(ageCenter = (Age - median(Age))
+         )%>%
+           unite(Item, item, Condition, sep = "_", remove=FALSE)
+           
+         
+library(buildmer)
+model_max<-buildmer(logRT~ Condition * ageCenter
+                    + (1+Condition | code)
+                    + (1+ageCenter | Item)
+                    , data=data_Exp_exclude
+                    , REML = TRUE
+                    , control = lmerControl(optimizer = "bobyqa"))
+
+summary(model_max)
+
+```
+
+## Linear mixed model fit by REML
+(p-values based on Wald z-scores) ['lmerMod']
+Formula: logRT ~ 1 + (1 | code) + (1 | Item)
+   Data: data_Exp_exclude
+Control: lmerControl(optimizer = "bobyqa")
+
+REML criterion at convergence: 1027.1
+
+Scaled residuals: 
+    Min      1Q  Median      3Q     Max 
+-2.3769 -0.6711 -0.1471  0.5353  3.5307 
+
+Random effects:
+ Groups   Name        Variance Std.Dev.
+ Item     (Intercept) 0.02553  0.1598  
+ code     (Intercept) 0.03159  0.1777  
+ Residual             0.08020  0.2832  
+Number of obs: 2122, groups:  Item, 82; code, 72
+
+Fixed effects:
+            Estimate Std. Error t value Pr(>|t|)    
+(Intercept)  0.18407    0.02826   6.515 7.28e-11 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+# Data Visualization and Analysis
+```{r Plot - Age_Bin x logRT ~ Condition}
+ggplot(data_Exp_exclude,
+       aes(x = Age_Bin,
+           y = logRT,
+           color = Condition)
+       ) + 
+  geom_boxplot()
+
+```
+
+## Comments on the study
+After performing analysis of the data available to us, the findings were not
+consistent with our expectations. Upon further inspection of the data, it was
+discovered that there was an issue with the experimental design that invalidated
+the results of the study. A very important lesson I learned working on this
+project is how to identify problems with data through the crucial process of
+exploratory visual analysis.
