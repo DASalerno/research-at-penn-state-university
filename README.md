@@ -1,5 +1,3 @@
-Research contributions towards projects at Penn State University
-
 This repository contains samples of my contributions to research projects I volunteered on at Penn State University under Dr. Matthew Carlson and Dr. Katrina Connell.
 
   The projects directed by Dr. Connell (_Pirate Project_ and _FOAN Project_) all had some overlapping elements: (1) they used eye-movement data, and (2) they examined the role of linguistic variables during prediction in language comprehension. In the most common version of the experiments, participants were instructed to listen to a sentence (e.g., “Click on the image of an orange”) while viewing four images on a computer screen (e.g., an orange, the ‘target;’ a chair, the ‘competitor;’ two ants, and three turtles, the ‘distracters’). The question of interest was whether the presence of a linguistic cue (in the example above, the indefinite article an) in the instruction would trigger looks to the target (i.e., orange) before it was heard in the speech stream. The dependent variable in these studies was the proportion of fixations to the target image relative to the other images on the visual display.
