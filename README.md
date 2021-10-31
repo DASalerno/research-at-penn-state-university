@@ -1,4 +1,4 @@
-Penn-State
+Research contributions towards projects at Penn State University
 
 This repository contains samples of my contributions to research projects I volunteered on at Penn State University under Dr. Matthew Carlson and Dr. Katrina Connell.
 
